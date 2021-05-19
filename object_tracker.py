@@ -38,6 +38,68 @@ flags.DEFINE_boolean('dont_show', False, 'dont show video output')
 flags.DEFINE_boolean('info', False, 'show detailed info of tracked objects')
 flags.DEFINE_boolean('count', False, 'count objects being tracked on screen')
 
+import zmq
+from msgpack import unpackb, packb
+import numpy as np
+import cv2
+
+def get_video_world_camera():
+    context = zmq.Context()
+    # open a req port to talk to pupil
+    addr = '127.0.0.1'  # remote ip or localhost
+    req_port = "50020"  # same as in the pupil remote gui
+    req = context.socket(zmq.REQ)
+    req.connect("tcp://{}:{}".format(addr, req_port))
+    # ask for the sub port
+    req.send_string('SUB_PORT')
+    sub_port = req.recv_string()
+
+
+    # send notification:
+    def notify(notification):
+        """Sends ``notification`` to Pupil Remote"""
+        topic = 'notify.' + notification['subject']
+        payload = packb(notification, use_bin_type=True)
+        req.send_string(topic, flags=zmq.SNDMORE)
+        req.send(payload)
+        return req.recv_string()
+
+
+    # Start frame publisher with format BGR
+    notify({'subject': 'start_plugin', 'name': 'Frame_Publisher', 'args': {'format': 'bgr'}})
+
+    # open a sub port to listen to pupil
+    sub = context.socket(zmq.SUB)
+    sub.connect("tcp://{}:{}".format(addr, sub_port))
+
+    # set subscriptions to topics
+    # recv just pupil/gaze/notifications
+    sub.setsockopt_string(zmq.SUBSCRIBE, 'frame.')
+
+
+    def recv_from_sub():
+        '''Recv a message with topic, payload.
+
+        Topic is a utf-8 encoded string. Returned as unicode object.
+        Payload is a msgpack serialized dict. Returned as a python dict.
+
+        Any addional message frames will be added as a list
+        in the payload dict with key: '__raw_data__' .
+        '''
+        topic = sub.recv_string()
+        payload = unpackb(sub.recv(), encoding='utf-8')
+        extra_frames = []
+        while sub.get(zmq.RCVMORE):
+            extra_frames.append(sub.recv())
+        if extra_frames:
+            payload['__raw_data__'] = extra_frames
+        return topic, payload
+
+    return recv_from_sub
+
+
+
+
 def main(_argv):
     # Definition of the parameters
     max_cosine_distance = 0.4
@@ -74,32 +136,43 @@ def main(_argv):
         infer = saved_model_loaded.signatures['serving_default']
 
     # begin video capture
-    try:
-        vid = cv2.VideoCapture(int(video_path))
-    except:
-        vid = cv2.VideoCapture(video_path)
+    # try:
+    #     vid = cv2.VideoCapture(int(video_path))
+    # except:
+    #     vid = cv2.VideoCapture(video_path)
 
     out = None
 
     # get video ready to save locally if flag is set
     if FLAGS.output:
         # by default VideoCapture returns float instead of int
-        width = int(vid.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(vid.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        fps = int(vid.get(cv2.CAP_PROP_FPS))
-        codec = cv2.VideoWriter_fourcc(*FLAGS.output_format)
+        width = 640 #int(vid.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = 480 #int(vid.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        fps = 30 #int(vid.get(cv2.CAP_PROP_FPS))
+        codec = cv2.VideoWriter_fourcc(*'XVID') #cv2.VideoWriter_fourcc(*FLAGS.output_format)
         out = cv2.VideoWriter(FLAGS.output, codec, fps, (width, height))
 
     frame_num = 0
+
+    get_frame_fn = get_video_world_camera()
+
     # while video is running
     while True:
-        return_value, frame = vid.read()
-        if return_value:
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            image = Image.fromarray(frame)
-        else:
-            print('Video has ended or failed, try a different video format!')
-            break
+        # return_value, frame = vid.read()
+        # if return_value:
+        #     frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        #     image = Image.fromarray(frame)
+        # else:
+        #     print('Video has ended or failed, try a different video format!')
+        #     break
+
+        recent_world = None
+        topic, msg = get_frame_fn()
+        if topic == 'frame.world':
+            recent_world = np.frombuffer(msg['__raw_data__'][-1], dtype=np.uint8).reshape(msg['height'], msg['width'], 3)
+        frame = cv2.cvtColor(recent_world, cv2.COLOR_BGR2RGB)
+        image = Image.fromarray(recent_world)
+
         frame_num +=1
         print('Frame #: ', frame_num)
         frame_size = frame.shape[:2]
@@ -165,6 +238,7 @@ def main(_argv):
         # loop through objects and use class index to get class name, allow only classes in allowed_classes list
         names = []
         deleted_indx = []
+        print('Adithya: object tracked: {}'.format(num_objects))
         for i in range(num_objects):
             class_indx = int(classes[i])
             class_name = class_names[class_indx]
