@@ -146,8 +146,8 @@ def main(_argv):
     # get video ready to save locally if flag is set
     if FLAGS.output:
         # by default VideoCapture returns float instead of int
-        width = 640 #int(vid.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = 480 #int(vid.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        width = 1280 #int(vid.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = 720 #int(vid.get(cv2.CAP_PROP_FRAME_HEIGHT))
         fps = 30 #int(vid.get(cv2.CAP_PROP_FPS))
         codec = cv2.VideoWriter_fourcc(*'XVID') #cv2.VideoWriter_fourcc(*FLAGS.output_format)
         out = cv2.VideoWriter(FLAGS.output, codec, fps, (width, height))
@@ -167,11 +167,20 @@ def main(_argv):
         #     break
 
         recent_world = None
-        topic, msg = get_frame_fn()
-        if topic == 'frame.world':
-            recent_world = np.frombuffer(msg['__raw_data__'][-1], dtype=np.uint8).reshape(msg['height'], msg['width'], 3)
-        frame = cv2.cvtColor(recent_world, cv2.COLOR_BGR2RGB)
-        image = Image.fromarray(recent_world)
+        frame = None
+        image = None
+
+        try:
+            topic, msg = get_frame_fn()
+            if topic == 'frame.world':
+                recent_world = np.frombuffer(msg['__raw_data__'][-1], dtype=np.uint8).reshape(msg['height'], msg['width'], 3)
+            frame = cv2.cvtColor(recent_world, cv2.COLOR_BGR2RGB)
+            image = Image.fromarray(recent_world)
+        except KeyboardInterrupt:
+            pass
+
+        if image is None:
+            break
 
         frame_num +=1
         print('Frame #: ', frame_num)
